@@ -437,41 +437,66 @@ function clearStatus() {
 async function iniciarEscaner() {
   if (escaneando) return;
   if (!cfg.url) {
-    setStatus('⚙️ Primero configura la URL del Apps Script en la pestaña ⚙️', 'warn');
+    setStatus('⚙️ Primero configura la URL del Apps Script en la pestaña ⚙️ y luego vuelve aquí.', 'warn');
     return;
   }
   clearStatus();
+  setStatus('⏳ Iniciando cámara...', 'loading');
 
-  try {
-    // Pedir permiso de cámara explícitamente (funciona porque NO estamos en iframe)
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } }
-    });
-    stream.getTracks().forEach(t => t.stop());
-  } catch(err) {
-    let msg = '❌ Sin acceso a la cámara.<br>';
-    if (err.name === 'NotAllowedError') msg += '👉 Permite el acceso a la cámara en la barra del navegador.';
-    else if (err.name === 'NotFoundError') msg += '👉 No se detectó cámara en este dispositivo.';
-    else msg += err.message;
-    setStatus(msg, 'error');
-    return;
+  // Limpiar instancia anterior
+  if (scanner) {
+    try { await scanner.stop(); } catch(e) {}
+    try { await scanner.clear(); } catch(e) {}
+    scanner = null;
   }
 
   try {
-    if (scanner) { try { await scanner.stop(); } catch(e){} }
     scanner = new Html5Qrcode('reader', { verbose: false });
-    await scanner.start(
-      { facingMode: { ideal: 'environment' } },
-      { fps: 15, qrbox: { width: 260, height: 260 }, aspectRatio: 1.0 },
-      onQRDetectado,
-      () => {}
+
+    // Detectar cámaras disponibles primero
+    const camaras = await Html5Qrcode.getCameras();
+    if (!camaras || camaras.length === 0) {
+      setStatus('❌ No se detectó ninguna cámara en este dispositivo.', 'error');
+      return;
+    }
+
+    // Preferir cámara trasera; si no, usar la primera disponible
+    const camaraTrasera = camaras.find(c =>
+      c.label.toLowerCase().includes('back') ||
+      c.label.toLowerCase().includes('rear') ||
+      c.label.toLowerCase().includes('trasera') ||
+      c.label.toLowerCase().includes('environment')
     );
+    const camaraId = camaraTrasera ? camaraTrasera.id : camaras[camaras.length - 1].id;
+
+    await scanner.start(
+      camaraId,
+      { fps: 15, qrbox: { width: 250, height: 250 } },
+      onQRDetectado,
+      () => {}   // errores de frame — ignorar
+    );
+
     escaneando = true;
     document.getElementById('btn-activar').style.display = 'none';
     document.getElementById('btn-detener').style.display = 'flex';
     setStatus('✅ Cámara activa — apunta al código QR del estudiante', 'success');
+
   } catch(err) {
-    setStatus('❌ Error al iniciar escáner: ' + err.message, 'error');
+    const msg = err && err.message ? err.message :
+                typeof err === 'string' ? err : JSON.stringify(err);
+
+    let texto = '❌ No se pudo acceder a la cámara.<br>';
+    if (msg.includes('NotAllowed') || msg.includes('Permission')) {
+      texto += '👉 Haz clic en el ícono 🔒 de la barra del navegador y <b>permite la cámara</b>. Luego recarga.';
+    } else if (msg.includes('NotFound') || msg.includes('Requested device not found')) {
+      texto += '👉 No se encontró cámara. Verifica que esté conectada y no la use otra app.';
+    } else if (msg.includes('NotReadable') || msg.includes('Could not start')) {
+      texto += '👉 La cámara está siendo usada por otra aplicación. Ciérrala y recarga.';
+    } else {
+      texto += '⚠️ ' + msg;
+    }
+    setStatus(texto, 'error');
+    scanner = null;
   }
 }
 
